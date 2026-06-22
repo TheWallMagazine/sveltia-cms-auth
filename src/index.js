@@ -2,6 +2,7 @@
  * List of supported OAuth providers.
  */
 const supportedProviders = ['github', 'gitlab'];
+
 /**
  * Escape the given string for safe use in a regular expression.
  * @param {string} str - Original string.
@@ -109,7 +110,7 @@ const handleAuth = async (request, env) => {
 
     const params = new URLSearchParams({
       client_id: GITHUB_CLIENT_ID,
-      scope: 'repo,user',
+      scope: 'repo,user,read:org',
       state: csrfToken,
     });
 
@@ -189,6 +190,7 @@ const handleCallback = async (request, env) => {
   }
 
   const {
+    ALLOWED_ORGS,
     GITHUB_CLIENT_ID,
     GITHUB_CLIENT_SECRET,
     GITHUB_HOSTNAME = 'github.com',
@@ -270,6 +272,59 @@ const handleCallback = async (request, env) => {
       error: 'Server responded with malformed data. Please try again later.',
       errorCode: 'MALFORMED_RESPONSE',
     });
+  }
+
+  if (provider === 'github' && token && ALLOWED_ORGS) {
+    const allowedOrgs = ALLOWED_ORGS.split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (allowedOrgs.length > 0) {
+      const apiBase =
+        GITHUB_HOSTNAME === 'github.com'
+          ? 'https://api.github.com'
+          : `https://${GITHUB_HOSTNAME}/api/v3`;
+
+      let userOrgs;
+
+      try {
+        const orgsRes = await fetch(`${apiBase}/user/orgs`, {
+          headers: {
+            Accept: 'application/vnd.github+json',
+            Authorization: `Bearer ${token}`,
+            'User-Agent': 'sveltia-cms-auth',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+        });
+
+        if (!orgsRes.ok) {
+          return outputHTML({
+            provider,
+            error: 'Failed to verify organization membership. Please try again later.',
+            errorCode: 'ORG_CHECK_FAILED',
+          });
+        }
+
+        userOrgs = await orgsRes.json();
+      } catch {
+        return outputHTML({
+          provider,
+          error: 'Failed to verify organization membership. Please try again later.',
+          errorCode: 'ORG_CHECK_FAILED',
+        });
+      }
+
+      const memberOf = userOrgs.map((o) => o.login.toLowerCase());
+      const isAllowed = allowedOrgs.some((org) => memberOf.includes(org));
+
+      if (!isAllowed) {
+        return outputHTML({
+          provider,
+          error: 'You are not a member of an allowed GitHub organization.',
+          errorCode: 'NOT_ORG_MEMBER',
+        });
+      }
+    }
   }
 
   return outputHTML({ provider, token, error });
